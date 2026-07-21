@@ -1,0 +1,11 @@
+.env
+.cache_ia/
+historico.db
+orcamentos_salvos/
+perfil_empresa.json
+perfil_empresa/
+venv/
+.venv/
+__pycache__/
+*.pyc
+temp_planta.pdf
