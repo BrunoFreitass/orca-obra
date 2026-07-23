@@ -4,3 +4,4 @@ python-dotenv
 PyMuPDF
 openpyxl
 reportlab
+opencv-python-headless

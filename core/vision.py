@@ -2,11 +2,27 @@ import base64
 import json
 import os
 import time
+import tempfile
 
+import cv2
 import requests
 
 from core import cache
 from config import GEMINI_API_KEYS, GEMINI_MODEL, MOCK_AI, USE_CACHE, DADOS_MOCK
+from core.image_processing import melhorar_imagem
+
+class ErroExtracaoAmigavel(Exception):
+    """
+    Exceção personalizada para erros de extração da planta.
+    Permite exibir mensagens amigáveis ao usuário
+    sem expor detalhes técnicos diretamente.
+    """
+
+    def __init__(self, mensagem, detalhe_tecnico=None):
+        super().__init__(mensagem)
+        self.mensagem_amigavel = mensagem
+        self.detalhe_tecnico = detalhe_tecnico
+
 
 CAMPOS_AGREGADOS = (
     "area_piso_seco", "area_piso_molhado", "area_piso_externo",
@@ -14,32 +30,40 @@ CAMPOS_AGREGADOS = (
 )
 
 
-class ErroExtracaoAmigavel(RuntimeError):
-    """Erro com mensagem pronta pra mostrar ao usuario na tela
-    (st.error), sem JSON tecnico cru. O detalhe tecnico completo fica
-    em `detalhe_tecnico`, pra quem quiser investigar (ex: dentro de um
-    st.expander), sem poluir a mensagem principal."""
-
-    def __init__(self, mensagem_amigavel, detalhe_tecnico=""):
-        super().__init__(mensagem_amigavel)
-        self.mensagem_amigavel = mensagem_amigavel
-        self.detalhe_tecnico = detalhe_tecnico
-
-
 def _preparar_imagem(caminho_arquivo):
-    """Garante que sempre enviamos bytes de IMAGEM para a API.
-    Se o upload for um PDF, converte a primeira pagina para JPEG antes
-    de enviar (o Gemini nao interpreta bytes crus de PDF como imagem)."""
-    if caminho_arquivo.lower().endswith(".pdf"):
-        import fitz  # PyMuPDF
+    """
+    Sempre devolve uma imagem JPEG otimizada para enviar ao Gemini.
+    PDFs e imagens passam pelo mesmo pré-processamento.
+    """
 
-        doc = fitz.open(caminho_arquivo)
-        pagina = doc[0]
-        pix = pagina.get_pixmap(dpi=200)
-        return pix.tobytes("jpeg")
+    if caminho_arquivo.lower().endswith(".pdf"):
+        import fitz
+
+        with fitz.open(caminho_arquivo) as doc:
+            pagina = doc[0]
+            pix = pagina.get_pixmap(dpi=200)
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".jpg",
+            delete=False
+        ) as temp:
+            imagem_temporaria = temp.name
+
+        try:
+            pix.save(imagem_temporaria)
+
+            imagem = melhorar_imagem(imagem_temporaria)
+
+        finally:
+            if os.path.exists(imagem_temporaria):
+                os.remove(imagem_temporaria)
+
     else:
-        with open(caminho_arquivo, "rb") as f:
-            return f.read()
+        imagem = melhorar_imagem(caminho_arquivo)
+
+    _, buffer = cv2.imencode(".jpg", imagem)
+
+    return buffer.tobytes()
 
 
 def _montar_prompt():
@@ -49,7 +73,12 @@ def _montar_prompt():
     Antes de responder, raciocine internamente assim, COMODO POR
     COMODO (nao inclua esse raciocinio na resposta final, so o JSON
     agregado no final):
-
+    0. Quando a planta não possuir quadro de áreas:
+        (a) utilize as cotas lineares disponíveis;
+        (b) identifique largura e comprimento de cada ambiente;
+        (c) calcule a área aproximada;
+        (d) informe confiança como "media";
+        (f) nunca invente área como se fosse leitura direta.
     1. Liste cada comodo visivel na planta (sala, quarto, cozinha,
        banheiro, area de servico, varanda, garagem, etc).
     2. Para cada comodo, classifique o tipo de piso em uma das 3
@@ -178,8 +207,27 @@ def _chamar_gemini_com_uma_chave(chave, prompt, img_base64):
     espera_segundos = 5
 
     for tentativa in range(1, max_tentativas + 1):
-        resposta = requests.post(url, json=payload, headers=headers, timeout=60)
-        resultado = resposta.json()
+        try:
+            resposta = requests.post(url, json=payload, headers=headers, timeout=60)
+            resultado = resposta.json()
+        except requests.exceptions.RequestException as e:
+            # Falha de rede (timeout, DNS, conexao recusada etc.) --
+            # antes isso propagava sem tratamento e derrubava toda a
+            # extracao mesmo havendo outras chaves configuradas. Agora
+            # trata como "erro nesta chave" e segue pra proxima tentativa
+            # (ou proxima chave, se acabaram as tentativas aqui).
+            if tentativa < max_tentativas:
+                time.sleep(espera_segundos)
+                continue
+            return None, {"status": "ERRO_DE_REDE", "bruto": str(e)}
+        except ValueError:
+            # resposta.json() falhou -- corpo nao era JSON valido
+            # (ex: erro HTML de proxy/gateway). Trata como falha desta
+            # chave em vez de propagar exception nao tratada.
+            if tentativa < max_tentativas:
+                time.sleep(espera_segundos)
+                continue
+            return None, {"status": "RESPOSTA_INVALIDA", "bruto": resposta.text[:500] if 'resposta' in dir() else ""}
 
         if "candidates" in resultado:
             return resultado, None

@@ -5,9 +5,10 @@ orcamentos_salvos/
 perfil_empresa.json
 perfil_empresa/
 venv/
-.venv/
+.venv*/
 __pycache__/
+data/
 *.pyc
-temp_planta.pdf
+temp_planta.*
 Orcamento_Gerado.csv
 Orcamento_Gerado.xlsx

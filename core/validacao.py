@@ -34,7 +34,11 @@ def validar_dados(dados):
 
         if valor < 0:
             avisos.append(f"{nome} veio negativo ({valor}) — provavelmente um erro de leitura.")
-        elif valor == 0:
+        elif valor == 0 and minimo > 0:
+            # So alerta "zerado" quando o proprio campo NAO admite 0 como
+            # valor plausivel (ex: area de piso). Para campos cuja faixa
+            # comeca em 0 (portas, janelas), zero e um resultado legitimo
+            # e nao deveria gerar aviso.
             avisos.append(f"{nome} veio zerado — confira se a planta foi lida corretamente.")
         elif valor < minimo:
             avisos.append(f"{nome} está bem abaixo do esperado ({valor}) — vale conferir.")

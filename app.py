@@ -1,8 +1,9 @@
 import streamlit as st
 import os
-from datetime import datetime
 from core.vision import extrair_dados_da_planta, ErroExtracaoAmigavel
-from core.calculator import calcular_materiais, calcular_mao_de_obra
+from core.calculator import calcular_mao_de_obra
+from core.models import DadosExtracao, ConfiguracaoObra
+from core import orcamento_service
 from core.reporter import gerar_excel
 from core.proposta_pdf import gerar_pdf_proposta
 from core.validacao import validar_dados
@@ -134,44 +135,75 @@ arquivo_pdf = st.file_uploader("Arraste ou selecione o PDF da planta baixa", typ
 if arquivo_pdf is not None:
     st.success("Planta carregada com sucesso!")
 
-    # Passo 1: analisar a planta com a IA
+    # Salva temporariamente o arquivo enviado
+    extensao = os.path.splitext(arquivo_pdf.name)[1]
+
+    arquivo_temp = f"temp_planta{extensao}"
+
+    with open(arquivo_temp, "wb") as f:
+        f.write(arquivo_pdf.getbuffer())
+
+
+
+    # ============================
+    # ANÁLISE COM IA
+    # ============================
+
     if st.button("🔍 Analisar Planta"):
+
         with st.spinner("Analisando planta com IA..."):
-            # Salvar arquivo temporariamente
-            with open("temp_planta.pdf", "wb") as f:
-                f.write(arquivo_pdf.getbuffer())
 
             try:
-                dados_extraidos = extrair_dados_da_planta("temp_planta.pdf")
-                # Guardamos no session_state para sobreviver aos reruns do
-                # Streamlit enquanto o usuario ajusta os campos abaixo.
-                st.session_state["dados_extraidos"] = dados_extraidos
-            except ErroExtracaoAmigavel as e:
-                # Erro esperado/tratado (cota, chave invalida, resposta
-                # mal formada) -- mostra so a mensagem amigavel pro
-                # usuario. O detalhe tecnico completo fica escondido
-                # num expander, pra quem quiser investigar sem poluir
-                # a tela (e sem expor isso se estiver com o cliente
-                # olhando junto).
-                st.error(f"⚠️ {e.mensagem_amigavel}")
-                if e.detalhe_tecnico:
-                    with st.expander("Detalhes técnicos (para diagnóstico)"):
-                        st.code(e.detalhe_tecnico)
-                st.session_state.pop("dados_extraidos", None)
-            except Exception as e:
-                # Erro inesperado, fora dos casos que ja mapeamos em
-                # core/vision.py (ex: falha de rede, PDF corrompido).
-                # Ainda assim evitamos jogar o traceback cru na tela.
-                st.error(
-                    "⚠️ Ocorreu um erro inesperado ao analisar a planta. "
-                    "Tente novamente; se persistir, veja o detalhe técnico abaixo."
+
+                dados_extraidos = extrair_dados_da_planta(
+                    arquivo_temp
                 )
-                with st.expander("Detalhes técnicos (para diagnóstico)"):
-                    st.code(str(e))
-                st.session_state.pop("dados_extraidos", None)
+
+                st.session_state["dados_extraidos"] = dados_extraidos
+
+
+            except ErroExtracaoAmigavel as e:
+
+                st.error(
+                    f"⚠️ {e.mensagem_amigavel}"
+                )
+
+                if e.detalhe_tecnico:
+
+                    with st.expander(
+                        "Detalhes técnicos (para diagnóstico)"
+                    ):
+                        st.code(
+                            e.detalhe_tecnico
+                        )
+
+                st.session_state.pop(
+                    "dados_extraidos",
+                    None
+                )
+
+
+            except Exception as e:
+
+                st.error(
+                    "⚠️ Ocorreu um erro inesperado ao analisar a planta."
+                )
+
+                with st.expander(
+                    "Detalhes técnicos"
+                ):
+                    st.code(
+                        str(e)
+                    )
+
+                st.session_state.pop(
+                    "dados_extraidos",
+                    None
+                )
+                
             finally:
-                if os.path.exists("temp_planta.pdf"):
-                    os.remove("temp_planta.pdf")
+                if os.path.exists(arquivo_temp):
+                    os.remove(arquivo_temp)
 
     # Passo 2: mostrar os dados extraidos, editaveis, e permitir gerar o orcamento
     if "dados_extraidos" in st.session_state:
@@ -246,24 +278,25 @@ if arquivo_pdf is not None:
                 "Recomendamos conferir esses valores direto na planta antes de prosseguir."
             )
 
-        dados_confirmados = {
-            "area_piso_seco": area_piso_seco,
-            "area_piso_molhado": area_piso_molhado,
-            "area_piso_externo": area_piso_externo,
-            "metros_parede": metros_parede,
-            "portas_internas": portas_internas,
-            "portas_externas": portas_externas,
-            "janelas": janelas,
-        }
-        area_piso_total = area_piso_seco + area_piso_molhado + area_piso_externo
+        # Modelo de dominio com os valores ATUAIS dos campos (editados ou
+        # nao). Centraliza area total, area de parede etc. num so lugar,
+        # em vez de recalcular em cada funcao que precisa desses numeros.
+        dados_extracao = DadosExtracao(
+            area_piso_seco=area_piso_seco,
+            area_piso_molhado=area_piso_molhado,
+            area_piso_externo=area_piso_externo,
+            metros_parede=metros_parede,
+            portas_internas=portas_internas,
+            portas_externas=portas_externas,
+            janelas=janelas,
+        )
+        area_piso_total = dados_extracao.area_piso_total
 
-        # Validacao de faixa roda sobre os valores ATUAIS dos campos
-        # (editados ou nao) -- assim reage toda vez que o usuario mexe
-        # em algum numero, nao so uma vez logo apos a extracao. Passa a
-        # area total (soma das 3 categorias), que e o formato que
-        # core/validacao.py espera.
+        # Validacao de faixa roda sobre os valores ATUAIS dos campos --
+        # assim reage toda vez que o usuario mexe em algum numero, nao so
+        # uma vez logo apos a extracao.
         avisos = validar_dados({"area_piso": area_piso_total, "metros_parede": metros_parede,
-                                 "portas": portas_internas + portas_externas, "janelas": janelas})
+                                 "portas": dados_extracao.portas_total, "janelas": janelas})
         if avisos:
             st.warning(
                 "⚠️ Alguns valores parecem incomuns. Confira antes de gerar o orçamento:\n\n"
@@ -283,7 +316,7 @@ if arquivo_pdf is not None:
             "Edite livremente conforme o preço da sua equipe."
         )
 
-        mao_de_obra_sugerida = calcular_mao_de_obra(dados_confirmados, estado_uf, estrutura)
+        mao_de_obra_sugerida = calcular_mao_de_obra(dados_extracao, estado_uf, estrutura)
 
         chave_mo = "mao_de_obra_editada"
         # Se ainda nao existe edicao do usuario para esta config, usa a
@@ -341,23 +374,21 @@ if arquivo_pdf is not None:
                 st.error("Informe o nome do projeto/cliente antes de gerar o orçamento (campo no topo da página).")
             else:
                 with st.spinner("Calculando insumos e gerando documentos..."):
-                    # Motor de Cálculo de materiais
-                    orcamento_materiais = calcular_materiais(dados_confirmados, padrao, estado_uf, estrutura)
-
-                    # Combina materiais + mao de obra (ja editada pelo usuario)
-                    orcamento_final = orcamento_materiais + mao_de_obra_final
-
-                    custo_direto = sum(item["Total"] for item in orcamento_final)
-                    preco_venda = round(custo_direto * (1 + bdi_percentual / 100), 2)
+                    # Toda a logica de negocio (materiais + mao de obra,
+                    # custo direto, preco de venda, nome de arquivo) vive em
+                    # core/orcamento_service.py -- app.py so orquestra a tela.
+                    config_obra = ConfiguracaoObra(estado_uf=estado_uf, padrao=padrao, tipo_cobertura=estrutura)
+                    orcamento_final = orcamento_service.montar_orcamento_completo(
+                        dados_extracao, config_obra, mao_de_obra_final
+                    )
+                    custo_direto, preco_venda = orcamento_service.calcular_custo_e_preco(
+                        orcamento_final, bdi_percentual
+                    )
 
                     # Nome de arquivo UNICO por orcamento (timestamp), pra nao
                     # sobrescrever orcamentos anteriores e manter o historico
                     # sempre com os arquivos correspondentes disponiveis pra download.
-                    carimbo = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    nome_arquivo_seguro = "".join(
-                        c if c.isalnum() or c in " -_" else "_" for c in nome_projeto
-                    ).strip().replace(" ", "_")[:40]
-                    base_nome = f"{carimbo}_{nome_arquivo_seguro}"
+                    base_nome = orcamento_service.nome_arquivo_seguro(nome_projeto)
                     excel_path = os.path.join(PASTA_ORCAMENTOS, f"{base_nome}.xlsx")
                     pdf_path = os.path.join(PASTA_ORCAMENTOS, f"{base_nome}.pdf")
 
@@ -393,6 +424,15 @@ if arquivo_pdf is not None:
                     )
 
                     st.balloons()
+
+                    # Dashboard-resumo: visao rapida dos numeros principais
+                    # do orcamento recem-gerado, antes dos botoes de download.
+                    st.write("### 📊 Resumo do Orçamento")
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    col_m1.metric("Área Total", f"{area_piso_total:.0f} m²")
+                    col_m2.metric("Paredes", f"{metros_parede:.0f} m")
+                    col_m3.metric("Portas + Janelas", f"{portas_internas + portas_externas + janelas} un")
+                    col_m4.metric("Preço de Venda", f"R$ {preco_venda:,.2f}")
 
                     # Dois downloads lado a lado: Excel (uso interno) e PDF (cliente)
                     col_dl1, col_dl2 = st.columns(2)
