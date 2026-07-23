@@ -9,9 +9,6 @@ de mostrar o resultado na tela.
 
 from datetime import datetime
 
-from core.calculator import calcular_materiais
-from core.models import ConfiguracaoObra, DadosExtracao
-
 
 def nome_arquivo_seguro(nome_projeto: str, limite: int = 40) -> str:
     """Gera um nome de arquivo unico e seguro a partir do nome do
@@ -32,12 +29,8 @@ def calcular_custo_e_preco(itens: list, bdi_percentual: float) -> tuple[float, f
     return custo_direto, preco_venda
 
 
-def montar_orcamento_completo(
-    dados: DadosExtracao, config: ConfiguracaoObra, mao_de_obra_editada: list
-) -> list:
-    """Junta os materiais (recalculados a partir dos dados/config atuais)
-    com a mao de obra (ja editada pelo usuario na tela) num unico
-    orcamento -- lista de dicts no formato que reporter.py e
-    proposta_pdf.py esperam."""
-    materiais = calcular_materiais(dados, config.padrao, config.estado_uf, config.tipo_cobertura)
-    return materiais + mao_de_obra_editada
+def montar_orcamento_completo(materiais_editados: list, mao_de_obra_editada: list) -> list:
+    """Junta os materiais e a mao de obra (ambos ja editados pelo usuario
+    na tela) num unico orcamento -- lista de dicts no formato que
+    reporter.py e proposta_pdf.py esperam."""
+    return materiais_editados + mao_de_obra_editada

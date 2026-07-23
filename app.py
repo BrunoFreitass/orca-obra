@@ -1,8 +1,8 @@
 import streamlit as st
 import os
 from core.vision import extrair_dados_da_planta, ErroExtracaoAmigavel
-from core.calculator import calcular_mao_de_obra
-from core.models import DadosExtracao, ConfiguracaoObra
+from core.calculator import calcular_mao_de_obra, calcular_materiais
+from core.models import DadosExtracao
 from core import orcamento_service
 from core.reporter import gerar_excel
 from core.proposta_pdf import gerar_pdf_proposta
@@ -305,7 +305,50 @@ if arquivo_pdf is not None:
 
         st.write("---")
 
-        # Passo 3: mao de obra -- valor SUGERIDO, mas sempre editavel,
+        # Passo 3: materiais -- valor SUGERIDO com base nos coeficientes
+        # de consumo padrao (core/calculator.py), mas editavel, ja que
+        # o preco de material varia por fornecedor/regiao/negociacao.
+        st.write("### 📦 Materiais")
+        st.caption(
+            "Quantidades calculadas a partir da planta e do padrão de acabamento escolhido. "
+            "Edite o preço unitário conforme seu fornecedor."
+        )
+
+        materiais_sugeridos = calcular_materiais(dados_extracao, padrao, estado_uf, estrutura)
+
+        chave_mat = "materiais_editados"
+        if chave_mat not in st.session_state:
+            st.session_state[chave_mat] = materiais_sugeridos
+
+        tabela_mat = st.data_editor(
+            st.session_state[chave_mat],
+            column_config={
+                "Tipo": None,  # oculta a coluna, e so pra uso interno
+                "Material": st.column_config.TextColumn("Material", disabled=True),
+                "Quantidade": st.column_config.NumberColumn("Quantidade", disabled=True),
+                "Preco_Unit": st.column_config.NumberColumn("Preço Unit. (R$)", min_value=0.0, step=0.5),
+                "Total": st.column_config.NumberColumn("Total (R$)", disabled=True),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="editor_materiais",
+        )
+
+        # Recalcula o Total de cada linha apos a edicao do usuario, e
+        # guarda de volta no session_state para persistir entre reruns.
+        materiais_final = []
+        for item in tabela_mat:
+            item = dict(item)
+            item["Total"] = round(item["Quantidade"] * item["Preco_Unit"], 2)
+            materiais_final.append(item)
+        st.session_state[chave_mat] = materiais_final
+
+        total_materiais = sum(item["Total"] for item in materiais_final)
+        st.caption(f"Total de materiais: R$ {total_materiais:,.2f}")
+
+        st.write("---")
+
+        # Passo 4: mao de obra -- valor SUGERIDO, mas sempre editavel,
         # ja que o preco de mao de obra varia por equipe/regiao muito
         # mais do que o de material. Recalculamos a cada rerun para
         # refletir mudancas no estado/padrao/quantitativos acima, mas
@@ -353,7 +396,7 @@ if arquivo_pdf is not None:
 
         st.write("---")
 
-        # Passo 4: BDI -- percentual aplicado sobre o custo direto
+        # Passo 5: BDI -- percentual aplicado sobre o custo direto
         # (material + mao de obra) para chegar ao preco de venda.
         # 25% e uma referencia comum em obra residencial pequena, mas
         # varia MUITO conforme a empresa/negociacao -- por isso e um
@@ -377,9 +420,8 @@ if arquivo_pdf is not None:
                     # Toda a logica de negocio (materiais + mao de obra,
                     # custo direto, preco de venda, nome de arquivo) vive em
                     # core/orcamento_service.py -- app.py so orquestra a tela.
-                    config_obra = ConfiguracaoObra(estado_uf=estado_uf, padrao=padrao, tipo_cobertura=estrutura)
                     orcamento_final = orcamento_service.montar_orcamento_completo(
-                        dados_extracao, config_obra, mao_de_obra_final
+                        materiais_final, mao_de_obra_final
                     )
                     custo_direto, preco_venda = orcamento_service.calcular_custo_e_preco(
                         orcamento_final, bdi_percentual
